@@ -9,13 +9,14 @@ declare_id!("Bgr3WiJ2PpKZW6mun2a6JCDugfZ8ZaRfJhuhQsV9KQHz");
 pub mod new_vesting {
     use super::*;
     pub fn initialize(ctx: Context<Initialize>,
-    vested_amount:u64,
-    unlock_time:u64 ) -> ProgramResult 
+    schedule:Vec<Schedule> ,
+    total_amount:u64) -> ProgramResult 
     {
         ctx.accounts.escrow_account.sender_key = *ctx.accounts.sender.key;
         ctx.accounts.escrow_account.receiver_key = *ctx.accounts.receiver_account.key;
-        ctx.accounts.escrow_account.vested_amount = vested_amount;
-        ctx.accounts.escrow_account.unlock_time = unlock_time;
+        ctx.accounts.escrow_account.mint_address=*ctx.accounts.mint.to_account_info().key;
+        ctx.accounts.escrow_account.schedule=schedule;
+        ctx.accounts.escrow_account.total_amount=total_amount;
         let (vault_authority, _vault_authority_bump) =
         Pubkey::find_program_address(&[&ctx.accounts.receiver_account.key.to_bytes()], ctx.program_id);
        
@@ -36,15 +37,26 @@ pub mod new_vesting {
         let authority_seeds= &[&ctx.accounts.receiver.key.to_bytes()[..], &[vault_authority_bump]];
         
         let time_now = Clock::get().unwrap().unix_timestamp as u64;
-        if time_now>=ctx.accounts.escrow_account.unlock_time
-        {
+
+        let escrow= ctx.accounts.escrow_account.as_mut();
+        let mut transfer_amount =0;
+
+        for scheduling in escrow.schedule.iter_mut() {
+            if time_now>= scheduling.time {
+                transfer_amount+= scheduling.amount;
+                scheduling.amount = 0;
+            }
+        }
+        if transfer_amount == 0 {
+            msg!("Vesting contract has not yet reached release time");
+            return Err(ProgramError::InvalidArgument);
+        }
+
         token::transfer(
         ctx.accounts.into_transfer_to_taker_context().with_signer(&[&authority_seeds[..]]),
-        ctx.accounts.escrow_account.vested_amount,)?;
-        }
+        transfer_amount,)?;
         Ok(())
-            
-}
+    }
 }
 
 #[derive(Accounts)]
@@ -68,9 +80,13 @@ pub struct Initialize<'info> {
     pub receiver_account: AccountInfo<'info>,
     #[account(zero)]
     pub escrow_account: Box<Account<'info, EscrowAccount>>,
-    pub system_program: AccountInfo<'info>,
+    pub system_program: SystemAccount<'info>,
     pub rent: Sysvar<'info, Rent>,
+    #[account(
+        constraint = token_program.key != &spl_token::id()
+    )]
     pub token_program: AccountInfo<'info>,
+   
 }
 
 
@@ -88,10 +104,14 @@ pub struct UnLock<'info> {
         constraint = escrow_account.receiver_key== *receiver.key,
     )]
     pub escrow_account: Box<Account<'info, EscrowAccount>>,
-    pub system_program: AccountInfo<'info>,
+    pub system_program: SystemAccount<'info>,
     pub vault_authority: AccountInfo<'info>,
     pub rent: Sysvar<'info, Rent>,
+    #[account(
+        constraint = token_program.key != &spl_token::id()
+    )]
     pub token_program: AccountInfo<'info>,
+  
 }
 
 #[account]
@@ -100,8 +120,15 @@ pub struct EscrowAccount {
     pub receiver_key: Pubkey,
     pub vested_amount: u64,
     pub unlock_time: u64,
+    pub mint_address:Pubkey,
+    pub schedule: Vec<Schedule>,
+    pub total_amount:u64,
 }
-
+#[account]
+pub struct Schedule {
+pub time:u64,
+pub amount:u64,
+}
 impl<'info> Initialize<'info> {
     fn into_transfer_to_pda_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
         let cpi_accounts = Transfer {

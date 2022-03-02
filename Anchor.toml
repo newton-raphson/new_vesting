@@ -1,6 +1,6 @@
 [features]
 seeds = false
-[programs.localnet]
+[programs.devnet]
 new_vesting = "Bgr3WiJ2PpKZW6mun2a6JCDugfZ8ZaRfJhuhQsV9KQHz"
 
 [registry]
